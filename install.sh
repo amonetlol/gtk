@@ -49,6 +49,7 @@ INSTALL_THEMES=1
 INSTALL_ICONS=1
 INSTALL_CURSORS=1
 INSTALL_BIN=1
+DOWNLOAD_ASSETS=1
 
 die() {
     echo "install: $*" >&2
@@ -79,6 +80,7 @@ Opções:
   --icons-only     instala só ícones (zip + MacTahoe)
   --cursors-only   instala só cursors.zip
   --skip-assets    instala só o theme-pick
+  --skip-download  não baixa zips (usa Assets/ local)
   -h, --help       mostra esta ajuda
 EOF
 }
@@ -93,6 +95,7 @@ parse_args() {
             --icons-only) INSTALL_BIN=0; INSTALL_THEMES=0; INSTALL_CURSORS=0 ;;
             --cursors-only) INSTALL_BIN=0; INSTALL_THEMES=0; INSTALL_ICONS=0 ;;
             --skip-assets) INSTALL_THEMES=0; INSTALL_ICONS=0; INSTALL_CURSORS=0 ;;
+            --skip-download) DOWNLOAD_ASSETS=0 ;;
             *) die "opção desconhecida: $arg" ;;
         esac
     done
@@ -184,6 +187,12 @@ main() {
 
     if (( INSTALL_THEMES || INSTALL_ICONS || INSTALL_CURSORS )); then
         need_cmd unzip
+        if (( DOWNLOAD_ASSETS )); then
+            need_cmd curl 2>/dev/null || need_cmd wget
+            echo "→ Baixando assets (máquina nova)..."
+            ASSETS_DIR="$ASSETS" bash "$REPO_ROOT/scripts/download-assets.sh"
+            echo
+        fi
     fi
 
     if (( INSTALL_ICONS )) && [[ -f "$MACTAHOE_ARCHIVE" ]]; then

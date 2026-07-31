@@ -1,98 +1,103 @@
 # gtk
 
-Pacote portátil de temas GTK, ícones, cursores e o seletor `theme-pick` (GNOME + Hyprland).
+Pacote para instalar temas GTK, ícones, cursores e o seletor `theme-pick` em **máquinas novas** (GNOME + Hyprland).
+
+## Instalar do zero (máquina nova)
+
+```bash
+git clone https://github.com/amonetlol/gtk.git
+cd gtk
+chmod +x install.sh
+./install.sh
+```
+
+O `install.sh` automaticamente:
+
+1. **Baixa** `themes.zip`, `icons.zip` e `cursors.zip` da [GitHub Release](https://github.com/amonetlol/gtk/releases)
+2. Instala `theme-pick` em `~/.local/bin/`
+3. Extrai tudo em `~/.themes` e `~/.local/share/icons`
+
+Depois:
+
+```bash
+theme-pick
+```
+
+### Dependências na máquina nova
+
+```bash
+# Arch
+sudo pacman -S unzip curl fzf
+
+# Debian/Ubuntu
+sudo apt install unzip curl fzf
+```
 
 ## Estrutura
 
 ```
 gtk/
-├── bin/theme-pick              # seletor interativo (fzf)
+├── bin/theme-pick
+├── config/
+│   ├── release.env          # URL da GitHub Release
+│   └── icons.include        # lista de ícones no bundle (mantenedor)
+├── install.sh               # instala do zero (baixa + extrai)
 ├── scripts/
-│   ├── vendor-assets.sh        # baixa Manhattan + MacTahoe
-│   └── pack-assets.sh          # gera os zips na máquina fonte
-├── install.sh                  # instala tudo na máquina destino
-└── Assets/
-    ├── Manhattan.zip           # tema (vendor)
-    ├── MacTahoe.tar.xz         # ícones (vendor)
-    ├── themes.zip              # ~/.themes + Manhattan
-    ├── icons.zip               # ~/.local/share/icons + MacTahoe
-    └── cursors.zip             # Bibata (sem -Right) + Qogir-cursors
+│   ├── download-assets.sh   # só download dos zips
+│   ├── pack-assets.sh       # gera zips (mantenedor)
+│   ├── publish-release.sh   # publica na GitHub Release
+│   └── vendor-assets.sh
+└── Assets/                  # zips baixados/gerados (não vão pro git)
 ```
 
-## Gerar os Assets (máquina fonte)
+## De onde vêm os arquivos
+
+| Arquivo | Na máquina nova | Origem |
+|---------|-----------------|--------|
+| `themes.zip` | **Download** da Release | Gerado pelo mantenedor |
+| `icons.zip` | **Download** da Release | Gerado pelo mantenedor |
+| `cursors.zip` | **Download** da Release | Gerado pelo mantenedor |
+| `Manhattan.zip` | No git ou fallback download | [amonetlol/dot](https://github.com/amonetlol/dot) |
+| `MacTahoe.tar.xz` | No git ou fallback download | [amonetlol/dot](https://github.com/amonetlol/dot) |
+
+Os zips grandes **não ficam no git** (limite de 100 MB do GitHub). Ficam na **GitHub Release**.
+
+## Fluxo do mantenedor (gerar e publicar)
 
 Na máquina onde os temas já estão instalados:
 
 ```bash
-git clone <repo> gtk && cd gtk
-chmod +x scripts/*.sh
-
-# baixa Manhattan e MacTahoe (amonetlol/dot)
-./scripts/vendor-assets.sh
-
-# gera os zips (inclui vendor nos bundles)
+# 1. Gera os bundles a partir de ~/.themes, ~/.local/share/icons, /usr/share/icons
 ./scripts/pack-assets.sh
+
+# 2. Publica na GitHub Release (divide icons.zip se > 1.9 GB)
+./scripts/publish-release.sh v1.0.0
 ```
 
-### Vendor assets (incluídos automaticamente)
-
-| Arquivo | Conteúdo | Origem |
-|---------|----------|--------|
-| `Manhattan.zip` | Tema GTK Manhattan | [amonetlol/dot](https://github.com/amonetlol/dot) |
-| `MacTahoe.tar.xz` | Ícones MacTahoe | [amonetlol/dot](https://github.com/amonetlol/dot) |
-
-O `pack-assets.sh` mescla Manhattan em `themes.zip` e MacTahoe em `icons.zip`.
-
-### Cursores incluídos
-
-- Todos os **Bibata** em `/usr/share/icons`, exceto variantes `*-Right`
-- **Qogir-cursors**
-
-## Instalar (máquina destino)
-
-Funciona em **qualquer pasta** onde o repo foi baixado:
-
-```bash
-chmod +x install.sh
-
-# de dentro do repo
-./install.sh
-
-# ou de qualquer lugar
-~/Downloads/gtk/install.sh
-bash /tmp/gtk/install.sh
-```
-
-O instalador detecta automaticamente a pasta do repo e usa paths XDG padrão:
-
-| O quê | Destino padrão | Variável para override |
-|-------|----------------|------------------------|
-| `theme-pick` | `~/.local/bin/` | `INSTALL_BIN_DIR` |
-| temas | `~/.themes/` | `THEMES_DIR` |
-| ícones/cursores | `~/.local/share/icons/` | `ICONS_DIR` |
-| zips fonte | `<repo>/Assets/` | `ASSETS_DIR` |
-
-Exemplo com paths customizados:
-
-```bash
-ASSETS_DIR=~/meus-zips THEMES_DIR=~/.local/share/themes ~/Downloads/gtk/install.sh
-```
+Edite `config/icons.include` para controlar quais pacotes de ícones entram no bundle.
 
 ## Opções do instalador
 
 ```bash
-./install.sh --bin-only       # só theme-pick
-./install.sh --skip-assets    # só theme-pick
-./install.sh --themes-only    # só temas
-./install.sh --icons-only     # só ícones
-./install.sh --cursors-only   # só cursores
+./install.sh                  # download + instala tudo
+./install.sh --skip-download    # usa Assets/ já presentes
+./install.sh --bin-only         # só theme-pick
+./install.sh --themes-only
+./install.sh --icons-only
+./install.sh --cursors-only
 ```
 
-## Dependências
+## Variáveis de ambiente
 
-| Ação | Pacotes |
-|------|---------|
-| `pack-assets.sh` | `zip`, `unzip`, `tar` |
-| `vendor-assets.sh` | `curl` ou `wget`, `unzip` |
-| `install.sh` | `unzip` (+ `tar` se MacTahoe presente) |
-| `theme-pick` | `bash`, `fzf` (+ opcional: `gsettings`, `nwg-look`, `flatpak`) |
+| Variável | Uso |
+|----------|-----|
+| `GTK_RELEASE_URL` | URL base dos zips (padrão: `config/release.env`) |
+| `ASSETS_DIR` | Onde salvar/ler os zips |
+| `THEMES_DIR` | Destino dos temas (`~/.themes`) |
+| `ICONS_DIR` | Destino dos ícones (`~/.local/share/icons`) |
+| `INSTALL_BIN_DIR` | Destino do theme-pick (`~/.local/bin`) |
+
+## Cursores incluídos no bundle
+
+- Todos os **Bibata** (exceto `*-Right`)
+- **Qogir-cursors**
