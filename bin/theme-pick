@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.1"
 
 die() {
     echo "theme-pick: $*" >&2
@@ -304,12 +304,125 @@ sync_gnome_shell() {
     return 0
 }
 
+icon_theme_exists() {
+    local name="$1" base
+    for base in $(icon_dirs); do
+        [[ -f "$base/$name/index.theme" ]] && return 0
+    done
+    return 1
+}
+
+update_icon_cache() {
+    local theme="$1" base
+    command -v gtk-update-icon-cache >/dev/null 2>&1 || return 0
+    for base in $(icon_dirs); do
+        [[ -f "$base/$theme/index.theme" ]] || continue
+        gtk-update-icon-cache -f -t "$base/$theme" 2>/dev/null || true
+    done
+}
+
+ensure_session_bus() {
+    [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && return 0
+    [[ -n "${XDG_RUNTIME_DIR:-}" ]] || return 0
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+}
+
+is_gnome_shell_running() {
+    pgrep -x gnome-shell >/dev/null 2>&1
+}
+
+reload_gnome_panel() {
+    is_gnome_shell_running || return 0
+    ensure_session_bus
+
+    # limpa cache de ícones do Shell (barra pinada usa isso)
+    rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/gnome-shell"/* 2>/dev/null || true
+
+    if command -v gnome-extensions >/dev/null 2>&1; then
+        local ext enabled
+        for ext in \
+            dash-to-panel@jderose9.github.com \
+            trayIconsReloaded@selfmade.pl; do
+            enabled="$(gnome-extensions list --enabled 2>/dev/null | grep -Fx "$ext" || true)"
+            [[ -n "$enabled" ]] || continue
+            gnome-extensions disable "$ext" 2>/dev/null || true
+            sleep 0.25
+            gnome-extensions enable "$ext" 2>/dev/null || true
+        done
+    fi
+}
+
+reload_xsettingsd() {
+    pgrep -x xsettingsd >/dev/null 2>&1 || return 0
+    pkill -HUP xsettingsd 2>/dev/null || true
+}
+
+sync_icon_settings() {
+    local icon_theme="$1"
+    local gtk_theme cursor_theme
+
+    icon_theme_exists "$icon_theme" \
+        || die "tema de ícone não encontrado no sistema: $icon_theme"
+
+    gtk_theme="$(current_gtk || echo Adwaita)"
+    cursor_theme="$(current_cursor || echo Adwaita)"
+
+    if has_gsettings; then
+        gsettings set org.gnome.desktop.interface icon-theme "$icon_theme" 2>/dev/null \
+            || die "falha ao definir icon-theme via gsettings (sessão gráfica ativa?)"
+        local actual
+        actual="$(gsetting org.gnome.desktop.interface icon-theme || true)"
+        [[ "$actual" == "$icon_theme" ]] \
+            || die "gsettings não confirmou o ícone (esperado: $icon_theme, atual: ${actual:-?})"
+    fi
+
+    # sempre grava nos arquivos GTK — não confiar só no nwg-look
+    export_gtk_files "$gtk_theme" "$icon_theme" "$cursor_theme"
+
+    if command -v nwg-look >/dev/null 2>&1 && has_gsettings; then
+        nwg-look -x >/dev/null 2>&1 || true
+        # garante que o ícone escolhido prevalece se o export do nwg-look atrasar
+        export_gtk_files "$gtk_theme" "$icon_theme" "$cursor_theme"
+    fi
+
+    apply_flatpak "$gtk_theme" "$icon_theme" || true
+    update_icon_cache "$icon_theme"
+    reload_xsettingsd
+    reload_gnome_panel
+}
+
 apply_flatpak() {
     local gtk_theme="$1" icon_theme="$2"
     command -v flatpak >/dev/null 2>&1 || return 1
     flatpak override --user --env=GTK_THEME="$gtk_theme" 2>/dev/null || true
     flatpak override --user --env=ICON_THEME="$icon_theme" 2>/dev/null || true
     return 0
+}
+
+apply_icons_only() {
+    local icon_theme="$1"
+
+    echo
+    echo "Sessão: $(session_label)"
+    echo
+    echo "Aplicando ícones → $icon_theme"
+    echo
+
+    sync_icon_settings "$icon_theme"
+
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send "Ícones aplicados" "Tema: ${icon_theme}" 2>/dev/null || true
+    fi
+
+    echo "Camadas aplicadas:"
+    echo "  ✓ gsettings (icon-theme)"
+    echo "  ✓ arquivos GTK (gtk-3/4, gtkrc, xsettingsd, default)"
+    echo "  ✓ cache de ícones"
+    is_gnome_shell_running && echo "  ✓ GNOME Shell / dash-to-panel (recarregado)"
+    command -v flatpak >/dev/null 2>&1 && echo "  ✓ Flatpak"
+    echo
+    echo "Pronto."
+    echo "Se algum ícone da barra persistir, rode: Alt+F2 → r → Enter"
 }
 
 apply_theme() {
@@ -333,23 +446,24 @@ apply_theme() {
         applied+=("GNOME Shell")
     fi
 
+    # sempre exporta arquivos; nwg-look é complementar, não substituto
+    export_gtk_files "$gtk_theme" "$icon_theme" "$cursor_theme"
+    applied+=("arquivos GTK (gtk-3/4, gtkrc, xsettingsd)")
+
     if command -v nwg-look >/dev/null 2>&1 && has_gsettings; then
-        if nwg-look -x >/dev/null 2>&1; then
-            applied+=("nwg-look export")
-        else
-            export_gtk_files "$gtk_theme" "$icon_theme" "$cursor_theme"
-            applied+=("arquivos GTK (fallback)")
-        fi
-    else
+        nwg-look -x >/dev/null 2>&1 || true
         export_gtk_files "$gtk_theme" "$icon_theme" "$cursor_theme"
-        applied+=("arquivos GTK (gtk-3/4, gtkrc, xsettingsd)")
+        applied+=("nwg-look export")
     fi
 
     if apply_flatpak "$gtk_theme" "$icon_theme"; then
         applied+=("Flatpak")
     fi
 
-    echo "Camadas aplicadas:"
+    update_icon_cache "$icon_theme"
+    reload_xsettingsd
+    reload_gnome_panel
+    is_gnome_shell_running && applied+=("GNOME Shell / dash-to-panel")
     for layer in "${applied[@]}"; do
         echo "  ✓ $layer"
     done
@@ -470,7 +584,7 @@ main() {
         icons|icon)
             mapfile -t icons < <(list_icon_themes)
             sel="$(pick_with_fzf "Ícones>" "atual: $(current_icon)" "$(current_icon)" "${icons[@]}")" || exit 0
-            apply_theme "$(current_gtk || echo Adwaita)" "$sel" "$(current_cursor || echo Adwaita)"
+            apply_icons_only "$sel"
             ;;
         cursor)
             mapfile -t cursors < <(list_cursor_themes)
