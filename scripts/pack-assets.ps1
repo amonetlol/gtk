@@ -30,12 +30,20 @@ $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($packContent))
 Write-Host "→ Empacotando na máquina ${User}@${RemoteHost}..."
 $vendorContent = [IO.File]::ReadAllText((Join-Path $RepoRoot "scripts\vendor-assets.sh")).Replace("`r`n", "`n")
 $vendorB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($vendorContent))
+$iconsInclude = Join-Path $RepoRoot "config\icons.include"
+$iconsIncludeB64 = ""
+if (Test-Path $iconsInclude) {
+    $iconsIncludeContent = [IO.File]::ReadAllText($iconsInclude).Replace("`r`n", "`n")
+    $iconsIncludeB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($iconsIncludeContent))
+}
 $remoteCmd = @"
 echo '$b64' | base64 -d > /tmp/pack-assets.sh
 echo '$vendorB64' | base64 -d > /tmp/vendor-assets.sh
+mkdir -p /tmp/config
+$(if ($iconsIncludeB64) { "echo '$iconsIncludeB64' | base64 -d > /tmp/config/icons.include" })
 chmod +x /tmp/pack-assets.sh /tmp/vendor-assets.sh
 rm -rf /tmp/gtk-assets && mkdir -p /tmp/gtk-assets
-ASSETS_DIR=/tmp/gtk-assets bash /tmp/pack-assets.sh
+REPO_ROOT=/tmp ASSETS_DIR=/tmp/gtk-assets bash /tmp/pack-assets.sh
 "@
 & $Sshpass -p $Password ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL "${User}@${RemoteHost}" $remoteCmd
 
