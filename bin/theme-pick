@@ -1,0 +1,489 @@
+#!/usr/bin/env bash
+# theme-pick — portable GTK / icon / cursor picker (fzf)
+# Funciona em GNOME e Hyprland (e outros WMs).
+# deps: bash, fzf
+# optional: gsettings, nwg-look, flatpak, notify-send
+#
+# install: chmod +x theme-pick && mv theme-pick ~/.local/bin/
+
+set -euo pipefail
+
+VERSION="1.2.0"
+
+die() {
+    echo "theme-pick: $*" >&2
+    exit 1
+}
+
+need_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "comando obrigatório não encontrado: $1"
+}
+
+# --- environment detection -------------------------------------------------
+
+is_gnome_session() {
+    [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* \
+        || "${XDG_SESSION_DESKTOP:-}" == *gnome* \
+        || "${DESKTOP_SESSION:-}" == *gnome* ]]
+}
+
+is_hyprland_session() {
+    [[ "${XDG_CURRENT_DESKTOP:-}" == *[Hh]yprland* \
+        || -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]
+}
+
+has_gsettings() {
+    command -v gsettings >/dev/null 2>&1 \
+        && gsettings list-schemas 2>/dev/null | grep -qx org.gnome.desktop.interface
+}
+
+has_gnome_shell_theme() {
+    command -v gsettings >/dev/null 2>&1 \
+        && gsettings list-schemas 2>/dev/null | grep -qx org.gnome.shell.extensions.user-theme
+}
+
+session_label() {
+    if is_gnome_session; then
+        echo "GNOME"
+    elif is_hyprland_session; then
+        echo "Hyprland"
+    else
+        echo "${XDG_CURRENT_DESKTOP:-desconhecido}"
+    fi
+}
+
+# --- discovery -------------------------------------------------------------
+
+unique_dirs() {
+    local -A seen=()
+    local d
+    for d in "$@"; do
+        [[ -n "$d" && -d "$d" ]] || continue
+        d="$(readlink -f "$d" 2>/dev/null || realpath "$d" 2>/dev/null || echo "$d")"
+        [[ -n "${seen[$d]:-}" ]] && continue
+        seen["$d"]=1
+        printf '%s\n' "$d"
+    done
+}
+
+theme_dirs() {
+    unique_dirs \
+        "${HOME}/.themes" \
+        "${HOME}/.local/share/themes" \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/themes" \
+        "/usr/share/themes" \
+        "/usr/local/share/themes"
+}
+
+icon_dirs() {
+    unique_dirs \
+        "${HOME}/.icons" \
+        "${HOME}/.local/share/icons" \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/icons" \
+        "/usr/share/icons" \
+        "/usr/local/share/icons"
+}
+
+cursor_dirs() {
+    icon_dirs
+}
+
+is_gtk_theme() {
+    local name="$1" base
+    for base in $(theme_dirs); do
+        [[ -d "$base/$name/gtk-3.0" || -d "$base/$name/gtk-4.0" ]] && return 0
+    done
+    return 1
+}
+
+list_gtk_themes() {
+    local -A seen=() base dir name
+    while IFS= read -r base; do
+        for dir in "$base"/*; do
+            [[ -d "$dir" ]] || continue
+            name="$(basename "$dir")"
+            [[ "$name" =~ -(hdpi|xhdpi)$ ]] && continue
+            is_gtk_theme "$name" || continue
+            seen["$name"]=1
+        done
+    done < <(theme_dirs)
+    ((${#seen[@]})) || return 0
+    printf '%s\n' "${!seen[@]}" | LC_ALL=C sort -f
+}
+
+list_icon_themes() {
+    local -A seen=() base dir name
+    while IFS= read -r base; do
+        for dir in "$base"/*; do
+            [[ -d "$dir" && -f "$dir/index.theme" ]] || continue
+            name="$(basename "$dir")"
+            [[ "$name" == "default" || "$name" == hicolor ]] && continue
+            seen["$name"]=1
+        done
+    done < <(icon_dirs)
+    ((${#seen[@]})) || return 0
+    printf '%s\n' "${!seen[@]}" | LC_ALL=C sort -f
+}
+
+list_cursor_themes() {
+    local -A seen=() base dir name
+    while IFS= read -r base; do
+        for dir in "$base"/*; do
+            [[ -d "$dir/cursors" ]] || continue
+            name="$(basename "$dir")"
+            seen["$name"]=1
+        done
+    done < <(cursor_dirs)
+    ((${#seen[@]})) || return 0
+    printf '%s\n' "${!seen[@]}" | LC_ALL=C sort -f
+}
+
+# --- read current ----------------------------------------------------------
+
+read_ini() {
+    local key="$1"
+    local file="${HOME}/.config/gtk-3.0/settings.ini"
+    [[ -f "$file" ]] || return 1
+    grep -m1 "^${key}=" "$file" 2>/dev/null | cut -d= -f2- | tr -d '"'
+}
+
+gsetting() {
+    has_gsettings || return 1
+    gsettings get "$1" "$2" 2>/dev/null | tr -d "'"
+}
+
+current_gtk() {
+    local v
+    if is_gnome_session && has_gsettings; then
+        v="$(gsetting org.gnome.desktop.interface gtk-theme || true)"
+        [[ -n "$v" ]] && { echo "$v"; return; }
+    fi
+    v="$(read_ini gtk-theme-name || true)"
+    [[ -n "$v" ]] && { echo "$v"; return; }
+    gsetting org.gnome.desktop.interface gtk-theme || true
+}
+
+current_icon() {
+    local v
+    if is_gnome_session && has_gsettings; then
+        v="$(gsetting org.gnome.desktop.interface icon-theme || true)"
+        [[ -n "$v" ]] && { echo "$v"; return; }
+    fi
+    v="$(read_ini gtk-icon-theme-name || true)"
+    [[ -n "$v" ]] && { echo "$v"; return; }
+    gsetting org.gnome.desktop.interface icon-theme || true
+}
+
+current_cursor() {
+    local v
+    if is_gnome_session && has_gsettings; then
+        v="$(gsetting org.gnome.desktop.interface cursor-theme || true)"
+        [[ -n "$v" ]] && { echo "$v"; return; }
+    fi
+    v="$(read_ini gtk-cursor-theme-name || true)"
+    [[ -n "$v" ]] && { echo "$v"; return; }
+    gsetting org.gnome.desktop.interface cursor-theme || true
+}
+
+current_font() {
+    local v
+    v="$(read_ini gtk-font-name || true)"
+    [[ -n "$v" ]] && { echo "$v"; return; }
+    gsetting org.gnome.desktop.interface font-name || echo "Sans 10"
+}
+
+current_cursor_size() {
+    local v
+    v="$(read_ini gtk-cursor-theme-size || true)"
+    [[ -n "$v" ]] && { echo "$v"; return; }
+    gsetting org.gnome.desktop.interface cursor-size || echo "24"
+}
+
+prefer_dark() {
+    local v
+    v="$(read_ini gtk-application-prefer-dark-theme || true)"
+    [[ "$v" == "1" ]] && return 0
+    [[ "$(gsetting org.gnome.desktop.interface color-scheme || true)" == *dark* ]] && return 0
+    return 1
+}
+
+# --- fzf -------------------------------------------------------------------
+
+pick_with_fzf() {
+    local prompt="$1" header="$2" current="$3"
+    shift 3
+    local items=("$@")
+    local -a display=()
+    local item selected
+
+    ((${#items[@]})) || die "nenhum item encontrado para: $prompt"
+
+    for item in "${items[@]}"; do
+        if [[ -n "$current" && "$item" == "$current" ]]; then
+            display+=("● $item")
+        else
+            display+=("  $item")
+        fi
+    done
+
+    selected=$(printf '%s\n' "${display[@]}" | fzf \
+        --prompt="$prompt " \
+        --header="$header | ● = atual | digite para filtrar" \
+        --height="${FZF_HEIGHT:-45}%" \
+        --layout=reverse \
+        --border=rounded \
+        --pointer='▶') || return 1
+
+    [[ -n "$selected" ]] || return 1
+    selected="${selected#● }"
+    selected="${selected#  }"
+    echo "$selected"
+}
+
+# --- apply (GNOME + Hyprland + Flatpak) ------------------------------------
+
+export_gtk_files() {
+    local gtk_theme="$1" icon_theme="$2" cursor_theme="$3"
+    local font_name cursor_size prefer_dark_flag=0
+
+    font_name="$(current_font)"
+    cursor_size="$(current_cursor_size)"
+    prefer_dark && prefer_dark_flag=1
+
+    mkdir -p "${HOME}/.config/gtk-3.0" "${HOME}/.config/gtk-4.0"
+
+    for ini in "${HOME}/.config/gtk-3.0/settings.ini" "${HOME}/.config/gtk-4.0/settings.ini"; do
+        cat >"$ini" <<EOF
+[Settings]
+gtk-theme-name=${gtk_theme}
+gtk-icon-theme-name=${icon_theme}
+gtk-font-name=${font_name}
+gtk-cursor-theme-name=${cursor_theme}
+gtk-cursor-theme-size=${cursor_size}
+gtk-application-prefer-dark-theme=${prefer_dark_flag}
+EOF
+    done
+
+    cat >"${HOME}/.gtkrc-2.0" <<EOF
+gtk-theme-name="${gtk_theme}"
+gtk-icon-theme-name="${icon_theme}"
+gtk-font-name="${font_name}"
+gtk-cursor-theme-name="${cursor_theme}"
+gtk-cursor-theme-size=${cursor_size}
+EOF
+
+    mkdir -p "${HOME}/.config/xsettingsd"
+    cat >"${HOME}/.config/xsettingsd/xsettingsd.conf" <<EOF
+Gtk/ThemeName "${gtk_theme}"
+Gtk/IconThemeName "${icon_theme}"
+Gtk/CursorThemeName "${cursor_theme}"
+Gtk/CursorThemeSize ${cursor_size}
+EOF
+
+    mkdir -p "${HOME}/.local/share/icons/default"
+    cat >"${HOME}/.local/share/icons/default/index.theme" <<EOF
+[Icon Theme]
+Inherits=${icon_theme}
+EOF
+}
+
+sync_gsettings() {
+    local gtk_theme="$1" icon_theme="$2" cursor_theme="$3"
+    has_gsettings || return 1
+
+    gsettings set org.gnome.desktop.interface gtk-theme "$gtk_theme" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface icon-theme "$icon_theme" 2>/dev/null || true
+    gsettings set org.gnome.desktop.interface cursor-theme "$cursor_theme" 2>/dev/null || true
+    return 0
+}
+
+sync_gnome_shell() {
+    local gtk_theme="$1"
+    has_gnome_shell_theme || return 1
+    gsettings set org.gnome.shell.extensions.user-theme name "$gtk_theme" 2>/dev/null || true
+    return 0
+}
+
+apply_flatpak() {
+    local gtk_theme="$1" icon_theme="$2"
+    command -v flatpak >/dev/null 2>&1 || return 1
+    flatpak override --user --env=GTK_THEME="$gtk_theme" 2>/dev/null || true
+    flatpak override --user --env=ICON_THEME="$icon_theme" 2>/dev/null || true
+    return 0
+}
+
+apply_theme() {
+    local gtk_theme="$1" icon_theme="$2" cursor_theme="$3"
+    local -a applied=()
+
+    echo
+    echo "Sessão: $(session_label)"
+    echo
+    echo "Aplicando:"
+    echo "  GTK     → $gtk_theme"
+    echo "  Ícones  → $icon_theme"
+    echo "  Cursor  → $cursor_theme"
+    echo
+
+    if sync_gsettings "$gtk_theme" "$icon_theme" "$cursor_theme"; then
+        applied+=("gsettings (interface)")
+    fi
+
+    if sync_gnome_shell "$gtk_theme"; then
+        applied+=("GNOME Shell")
+    fi
+
+    if command -v nwg-look >/dev/null 2>&1 && has_gsettings; then
+        if nwg-look -x >/dev/null 2>&1; then
+            applied+=("nwg-look export")
+        else
+            export_gtk_files "$gtk_theme" "$icon_theme" "$cursor_theme"
+            applied+=("arquivos GTK (fallback)")
+        fi
+    else
+        export_gtk_files "$gtk_theme" "$icon_theme" "$cursor_theme"
+        applied+=("arquivos GTK (gtk-3/4, gtkrc, xsettingsd)")
+    fi
+
+    if apply_flatpak "$gtk_theme" "$icon_theme"; then
+        applied+=("Flatpak")
+    fi
+
+    echo "Camadas aplicadas:"
+    for layer in "${applied[@]}"; do
+        echo "  ✓ $layer"
+    done
+
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send "Tema aplicado" "GTK: ${gtk_theme}\nÍcones: ${icon_theme}\nCursor: ${cursor_theme}" 2>/dev/null || true
+    fi
+
+    echo
+    echo "Pronto."
+    echo "Dica: reinicie apps abertos se algum ainda mostrar o tema antigo."
+    echo "Hyprland: bordas/barra você configura manualmente no hyprland.conf."
+}
+
+# --- flows -----------------------------------------------------------------
+
+run_interactive() {
+    local gtk_cur icon_cur cursor_cur gtk_sel icon_sel cursor_sel
+    mapfile -t themes < <(list_gtk_themes)
+    mapfile -t icons < <(list_icon_themes)
+    mapfile -t cursors < <(list_cursor_themes)
+
+    ((${#themes[@]})) || die "nenhum tema GTK encontrado em: $(theme_dirs | tr '\n' ' ')"
+
+    gtk_cur="$(current_gtk)"
+    icon_cur="$(current_icon)"
+    cursor_cur="$(current_cursor)"
+
+    gtk_sel="$(pick_with_fzf "GTK>" "Passo 1/3 — atual: ${gtk_cur:-nenhum}" "${gtk_cur:-}" "${themes[@]}")" || exit 0
+    [[ -n "$gtk_sel" ]] || exit 0
+
+    if ((${#icons[@]})); then
+        icon_sel="$(pick_with_fzf "Ícones>" "Passo 2/3 — atual: ${icon_cur:-nenhum} | Esc = manter" "${icon_cur:-}" "${icons[@]}")" || icon_sel="${icon_cur:-}"
+    else
+        icon_sel="${icon_cur:-}"
+        echo "Nenhum tema de ícones encontrado; mantendo atual."
+    fi
+    [[ -n "$icon_sel" ]] || icon_sel="${icon_cur:-Adwaita}"
+
+    if ((${#cursors[@]})); then
+        cursor_sel="$(pick_with_fzf "Cursor>" "Passo 3/3 — atual: ${cursor_cur:-nenhum} | Esc = manter" "${cursor_cur:-}" "${cursors[@]}")" || cursor_sel="${cursor_cur:-}"
+    else
+        cursor_sel="${cursor_cur:-}"
+        echo "Nenhum cursor encontrado; mantendo atual."
+    fi
+    [[ -n "$cursor_sel" ]] || cursor_sel="${cursor_cur:-Adwaita}"
+
+    apply_theme "$gtk_sel" "$icon_sel" "$cursor_sel"
+}
+
+usage() {
+    cat <<EOF
+theme-pick v${VERSION} — seletor portátil de temas (fzf)
+
+Funciona em GNOME e Hyprland. Aplica tudo que estiver disponível:
+  • gsettings (interface GTK, ícones, cursor)
+  • GNOME Shell (se extensão user-theme estiver instalada)
+  • arquivos GTK 2/3/4, xsettingsd (Hyprland/sway)
+  • overrides Flatpak
+
+Não altera hyprland.conf — bordas e barra você faz manualmente.
+
+Uso:
+  theme-pick              fluxo interativo (GTK → ícones → cursor)
+  theme-pick gtk          escolher só tema GTK
+  theme-pick icons        escolher só ícones
+  theme-pick cursor       escolher só cursor
+  theme-pick list         listar temas GTK
+  theme-pick scan         mostrar pastas, contagens e ambiente
+  theme-pick -h           esta ajuda
+
+Dependências: bash, fzf
+Opcional: gsettings, nwg-look, flatpak, notify-send
+EOF
+}
+
+cmd_scan() {
+    echo "Sessão:     $(session_label)"
+    echo "gsettings:  $(has_gsettings && echo sim || echo não)"
+    echo "GNOME Shell:$(has_gnome_shell_theme && echo sim || echo não)"
+    echo "nwg-look:   $(command -v nwg-look >/dev/null && echo sim || echo não)"
+    echo "flatpak:    $(command -v flatpak >/dev/null && echo sim || echo não)"
+    echo
+    echo "Pastas de temas GTK:"
+    theme_dirs | sed 's/^/  /'
+    echo
+    echo "Pastas de ícones:"
+    icon_dirs | sed 's/^/  /'
+    echo
+    echo "Temas GTK:  $(list_gtk_themes | wc -l)"
+    echo "Ícones:     $(list_icon_themes | wc -l)"
+    echo "Cursors:    $(list_cursor_themes | wc -l)"
+    echo
+    echo "Atual:"
+    echo "  GTK:    $(current_gtk || echo '?')"
+    echo "  Ícones: $(current_icon || echo '?')"
+    echo "  Cursor: $(current_cursor || echo '?')"
+}
+
+main() {
+    need_cmd fzf
+
+    case "${1:-}" in
+        -h|--help|help)
+            usage
+            ;;
+        list)
+            list_gtk_themes
+            ;;
+        scan)
+            cmd_scan
+            ;;
+        gtk)
+            mapfile -t themes < <(list_gtk_themes)
+            sel="$(pick_with_fzf "GTK>" "atual: $(current_gtk)" "$(current_gtk)" "${themes[@]}")" || exit 0
+            apply_theme "$sel" "$(current_icon || echo Adwaita)" "$(current_cursor || echo Adwaita)"
+            ;;
+        icons|icon)
+            mapfile -t icons < <(list_icon_themes)
+            sel="$(pick_with_fzf "Ícones>" "atual: $(current_icon)" "$(current_icon)" "${icons[@]}")" || exit 0
+            apply_theme "$(current_gtk || echo Adwaita)" "$sel" "$(current_cursor || echo Adwaita)"
+            ;;
+        cursor)
+            mapfile -t cursors < <(list_cursor_themes)
+            sel="$(pick_with_fzf "Cursor>" "atual: $(current_cursor)" "$(current_cursor)" "${cursors[@]}")" || exit 0
+            apply_theme "$(current_gtk || echo Adwaita)" "$(current_icon || echo Adwaita)" "$sel"
+            ;;
+        "" )
+            run_interactive
+            ;;
+        *)
+            die "opção desconhecida: $1 (use -h)"
+            ;;
+    esac
+}
+
+main "$@"
