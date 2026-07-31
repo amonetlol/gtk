@@ -2,7 +2,8 @@
 # pack-assets.sh — empacota temas, ícones e cursores em Assets/*.zip
 # Inclui Manhattan (tema) e MacTahoe (ícones) via scripts/vendor-assets.sh
 #
-# Rode na máquina FONTE (onde os temas estão instalados).
+# Rode na máquina FONTE (onde os temas já estão instalados) para GERAR os bundles.
+# Máquinas novas usam install.sh (baixa os zips da GitHub Release).
 #
 # Uso:
 #   ./scripts/pack-assets.sh
@@ -104,17 +105,34 @@ pack_themes() {
     echo "  criado: $out ($(du -h "$out" | cut -f1))"
 }
 
+read_include_list() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    grep -v '^[[:space:]]*#' "$file" | grep -v '^[[:space:]]*$' || true
+}
+
 pack_icons() {
     local out="$ASSETS/icons.zip"
-    local staging
+    local staging include_file="$REPO_ROOT/config/icons.include"
+    local name
     staging="$(mktemp -d)"
 
     echo "→ Empacotando ícones"
 
-    if [[ -d "$ICONS_SRC" ]]; then
-        echo "  de $ICONS_SRC"
+    if [[ -f "$include_file" ]]; then
+        echo "  lista: config/icons.include"
+        while IFS= read -r name; do
+            [[ -z "$name" || "$name" == \#* ]] && continue
+            [[ -d "$ICONS_SRC/$name" ]] || { echo "  ! não encontrado: $name"; continue; }
+            cp -a "$ICONS_SRC/$name" "$staging/"
+            echo "  + $name"
+        done < "$include_file"
+    elif [[ -d "$ICONS_SRC" ]]; then
+        echo "  de $ICONS_SRC (todos)"
         cp -a "$ICONS_SRC"/. "$staging/"
         rm -rf "$staging/default"
+    else
+        die "nenhuma fonte de ícones (defina ICONS_SRC ou config/icons.include)"
     fi
 
     if [[ -f "$MACTAHOE_ARCHIVE" ]]; then
